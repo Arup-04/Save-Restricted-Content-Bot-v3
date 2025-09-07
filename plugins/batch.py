@@ -85,17 +85,31 @@ async def upd_dlg(c):
         print(f'Failed to update dialogs: {e}')
         return False
 
+# fixed the old group of 2021-2022 extraction 🌝 (buy krne ka fayda nhi ab old group) ✅ 
 async def get_msg(c, u, i, d, lt):
     try:
         if lt == 'public':
             try:
-                xm = await c.get_messages(i, d)
-                emp[i] = getattr(xm, "empty", False)
+                if str(i).lower().endswith('bot'):
+                    emp[i] = False
+                    xm = await u.get_messages(i, d)
+                    emp[i] = getattr(xm, "empty", False)
+                    if not emp[i]:
+                        emp[i] = True
+                        print(f"Bot chat found successfully...")
+                        return xm
+                    
                 if emp[i]:
-                    try: await u.join_chat(i)
-                    except: pass
-                    xm = await u.get_messages((await u.get_chat(f"@{i}")).id, d)
-                return xm
+                    xm = await c.get_messages(i, d)
+                    print(f"fetched by {c.me.username}")
+                    emp[i] = getattr(xm, "empty", False)
+                    if emp[i]:
+                        print(f"Not fetched by {c.me.username}")
+                        try: await u.join_chat(i)
+                        except: pass
+                        xm = await u.get_messages((await u.get_chat(f"@{i}")).id, d)
+                    
+                    return xm                   
             except Exception as e:
                 print(f'Error fetching public message: {e}')
                 return None
@@ -103,21 +117,47 @@ async def get_msg(c, u, i, d, lt):
             if u:
                 try:
                     async for _ in u.get_dialogs(limit=50): pass
-                    chat_id = i if str(i).startswith('-100') else f'-100{i}' if i.isdigit() else i
+                    
+                    # Try with -100 prefix first
+                    if str(i).startswith('-100'):
+                        chat_id_100 = i
+                        # For - prefix, remove -100 and add just -
+                        base_id = str(i)[4:]  # Remove -100
+                        chat_id_dash = f"-{base_id}"
+                    elif i.isdigit():
+                        chat_id_100 = f"-100{i}"
+                        chat_id_dash = f"-{i}"
+                    else:
+                        chat_id_100 = i
+                        chat_id_dash = i
+                    
+                    # Try -100 format first
                     try:
-                        peer = await u.resolve_peer(chat_id)
-                        if hasattr(peer, 'channel_id'): resolved_id = f'-100{peer.channel_id}'
-                        elif hasattr(peer, 'chat_id'): resolved_id = f'-{peer.chat_id}'
-                        elif hasattr(peer, 'user_id'): resolved_id = peer.user_id
-                        else: resolved_id = chat_id
-                        return await u.get_messages(resolved_id, d)
+                        result = await u.get_messages(chat_id_100, d)
+                        if result and not getattr(result, "empty", False):
+                            return result
                     except Exception:
-                        try:
-                            chat = await u.get_chat(chat_id)
-                            return await u.get_messages(chat.id, d)
-                        except Exception:
-                            async for _ in u.get_dialogs(limit=200): pass
-                            return await u.get_messages(chat_id, d)
+                        pass
+                    
+                    # Try - format second
+                    try:
+                        result = await u.get_messages(chat_id_dash, d)
+                        if result and not getattr(result, "empty", False):
+                            return result
+                    except Exception:
+                        pass
+                    
+                    # Final fallback - refresh dialogs and try original
+                    try:
+                        async for _ in u.get_dialogs(limit=200): pass
+                        result = await u.get_messages(i, d)
+                        if result and not getattr(result, "empty", False):
+                            return result
+                    except Exception:
+                        pass
+                    
+                    return None
+                            
                 except Exception as e:
                     print(f'Private channel error: {e}')
                     return None
@@ -125,6 +165,7 @@ async def get_msg(c, u, i, d, lt):
     except Exception as e:
         print(f'Error fetching message: {e}')
         return None
+
 
 async def get_ubot(uid):
     bt = await get_user_data_key(uid, "bot_token", None)
@@ -223,15 +264,28 @@ async def process_msg(c, u, m, d, lt, uid, i):
             
             st = time.time()
             p = await c.send_message(d, 'Downloading...')
-            
-            if m.video:
-                c_name = sanitize(m.video.file_name)
-            elif m.audio:
-                c_name = sanitize(m.audio.file_name)
-            elif m.document:
-                c_name = sanitize(m.document.file_name)
 
-            f = await u.download_media(m, progress=prog, progress_args=(c, d, p.id, st))
+            c_name = f"{time.time()}"
+            if m.video:
+                file_name = m.video.file_name
+                if not file_name:
+                    file_name = f"{time.time()}.mp4"
+                    c_name = sanitize(file_name)
+            elif m.audio:
+                file_name = m.audio.file_name
+                if not file_name:
+                    file_name = f"{time.time()}.mp3"
+                    c_name = sanitize(file_name)
+            elif m.document:
+                file_name = m.document.file_name
+                if not file_name:
+                    file_name = f"{time.time()}"
+                    c_name = sanitize(file_name)
+            elif m.photo:
+                file_name = f"{time.time()}.jpg"
+                c_name = sanitize(file_name)
+    
+            f = await u.download_media(m, file_name=c_name, progress=prog, progress_args=(c, d, p.id, st))
             
             if not f:
                 await c.edit_message_text(d, p.id, 'Failed.')
@@ -284,7 +338,10 @@ async def process_msg(c, u, m, d, lt, uid, i):
             st = time.time()
 
             try:
-                if m.video or os.path.splitext(f)[1].lower() == '.mp4':
+                video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ogv']
+                audio_extensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.opus', '.aiff', '.ac3']
+                file_ext = os.path.splitext(f)[1].lower()
+                if m.video or (m.document and file_ext in video_extensions):
                     mtd = await get_video_metadata(f)
                     dur, h, w = mtd['duration'], mtd['width'], mtd['height']
                     th = await screenshot(f, dur, d)
@@ -299,8 +356,8 @@ async def process_msg(c, u, m, d, lt, uid, i):
                     await c.send_voice(tcid, f, progress=prog, progress_args=(c, d, p.id, st), 
                                     reply_to_message_id=rtmid)
                 elif m.sticker:
-                    await c.send_sticker(tcid, m.sticker.file_id)
-                elif m.audio:
+                    await c.send_sticker(tcid, m.sticker.file_id, reply_to_message_id=rtmid)
+                elif m.audio or (m.document and file_ext in audio_extensions):
                     await c.send_audio(tcid, audio=f, caption=ft if m.caption else None, 
                                     thumb=th, progress=prog, progress_args=(c, d, p.id, st), 
                                     reply_to_message_id=rtmid)
@@ -308,6 +365,10 @@ async def process_msg(c, u, m, d, lt, uid, i):
                     await c.send_photo(tcid, photo=f, caption=ft if m.caption else None, 
                                     progress=prog, progress_args=(c, d, p.id, st), 
                                     reply_to_message_id=rtmid)
+                elif m.document:
+                    await c.send_document(tcid, document=f, caption=ft if m.caption else None, 
+                                        progress=prog, progress_args=(c, d, p.id, st), 
+                                        reply_to_message_id=rtmid)
                 else:
                     await c.send_document(tcid, document=f, caption=ft if m.caption else None, 
                                         progress=prog, progress_args=(c, d, p.id, st), 
@@ -327,7 +388,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
             return 'Sent.'
     except Exception as e:
         return f'Error: {str(e)[:50]}'
-
+        
 @X.on_message(filters.command(['batch', 'single']))
 async def process_cmd(c, m):
     uid = m.from_user.id
@@ -370,6 +431,10 @@ async def text_handler(c, m):
     uid = m.from_user.id
     if uid not in Z: return
     s = Z[uid].get('step')
+    x = await get_ubot(uid)
+    if not x:
+        await message.reply("Add your bot /setbot `token`")
+        return
 
     if s == 'start':
         L = m.text
@@ -491,3 +556,5 @@ async def text_handler(c, m):
         finally:
             await remove_active_batch(uid)
             Z.pop(uid, None)
+
+
